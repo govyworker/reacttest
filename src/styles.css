@@ -96,12 +96,6 @@ p {
   color: #64748b;
 }
 
-.source-note {
-  margin-top: 10px;
-  font-size: 14px;
-  color: #1e3a8a;
-}
-
 .primary-btn {
   text-decoration: none;
   border: none;
@@ -306,6 +300,20 @@ h2 {
   margin-top: 12px;
   font-size: 14px;
   color: #475569;
+}
+
+.action-group {
+  display: flex;
+  gap: 8px;
+}
+
+.secondary-btn {
+  text-decoration: none;
+  background: #e2e8f0;
+  color: #1e293b;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-weight: 600;
 }
 
 .hidden {
