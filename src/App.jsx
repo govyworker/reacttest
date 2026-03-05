@@ -1,8 +1,7 @@
 import { Link, Navigate, Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
-import { useEffect, useMemo, useState } from 'react';
-import { fetchSharePointEvents, hasSharePointConfig } from './sharepointEvents';
+import { useMemo, useState } from 'react';
 
-const defaultEvents = [
+const events = [
   { id: 'annual-tech-conference-2026', title: 'Annual Tech Conference 2026', date: 'March 15, 2026', time: '9:00 AM - 5:00 PM', location: 'Grand Convention Center, Hall A', status: 'upcoming', checkedIn: 0, totalGuests: 342 },
   { id: 'product-launch-webinar', title: 'Product Launch Webinar', date: 'February 28, 2026', time: '2:00 PM - 3:30 PM', location: 'Virtual (Zoom)', status: 'live', checkedIn: 147, totalGuests: 189 },
   { id: 'team-building-workshop', title: 'Team Building Workshop', date: 'March 5, 2026', time: '10:00 AM - 4:00 PM', location: 'Riverside Park Pavilion', status: 'upcoming', checkedIn: 0, totalGuests: 56 },
@@ -12,43 +11,14 @@ const defaultEvents = [
 ];
 
 function App() {
-  const [events, setEvents] = useState(defaultEvents);
-  const [sourceLabel, setSourceLabel] = useState('Local seed data');
-
-  useEffect(() => {
-    async function loadEvents() {
-      if (!hasSharePointConfig()) return;
-
-      const accessToken = import.meta.env.VITE_SP_GRAPH_TOKEN;
-      if (!accessToken) {
-        setSourceLabel('SharePoint config found, missing VITE_SP_GRAPH_TOKEN (using local seed data)');
-        return;
-      }
-
-      try {
-        const sharePointEvents = await fetchSharePointEvents({ accessToken });
-        if (sharePointEvents.length > 0) {
-          setEvents(sharePointEvents);
-          setSourceLabel('SharePoint list data');
-        } else {
-          setSourceLabel('SharePoint connected, but list has no rows (using local seed data)');
-        }
-      } catch (error) {
-        setSourceLabel(`SharePoint sync failed (${error.message}) — using local seed data`);
-      }
-    }
-
-    loadEvents();
-  }, []);
-
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/events" replace />} />
-      <Route path="/events" element={<EventsPage events={events} sourceLabel={sourceLabel} />} />
+      <Route path="/events" element={<EventsPage />} />
       <Route path="/events/new" element={<SimplePage title="Create Event" text="Set up a new event, attendee capacity, and QR check-in policy for your internal DND group." />} />
       <Route path="/events/:id" element={<SimplePage title="Manage Event" text="Review attendance data, update details, and monitor check-ins in one place." />} />
       <Route path="/public-view" element={<SimplePage title="Public View" text="Internal event discovery feed for teammates to see upcoming sessions and RSVP." />} />
-      <Route path="/check-in" element={<CheckInPage events={events} />} />
+      <Route path="/check-in" element={<CheckInPage />} />
     </Routes>
   );
 }
@@ -68,7 +38,7 @@ function Header() {
   );
 }
 
-function EventsPage({ events, sourceLabel }) {
+function EventsPage() {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('all');
   const visibleEvents = useMemo(() => events.filter((event) => {
@@ -76,7 +46,7 @@ function EventsPage({ events, sourceLabel }) {
     const matchesText = event.title.toLowerCase().includes(q) || event.location.toLowerCase().includes(q);
     const matchesStatus = status === 'all' || event.status === status;
     return matchesText && matchesStatus;
-  }), [events, search, status]);
+  }), [search, status]);
 
   return (
     <div className="page-wrap">
@@ -86,7 +56,6 @@ function EventsPage({ events, sourceLabel }) {
           <div>
             <h1>Events</h1>
             <p>Manage your events and track check-ins</p>
-            <p className="source-note">Data source: {sourceLabel}</p>
           </div>
           <Link to="/events/new" className="primary-btn">+ Create Event</Link>
         </div>
@@ -114,7 +83,10 @@ function EventsPage({ events, sourceLabel }) {
               <div className="row">📍 {event.location}</div>
               <div className="card-footer">
                 <p><strong>{event.checkedIn}</strong> / {event.totalGuests} checked in</p>
-                <Link to={`/events/${event.id}`} className="manage-btn">Manage</Link>
+                <div className="action-group">
+                  <Link to={`/check-in?event=${encodeURIComponent(event.title)}`} className="secondary-btn">Check-In</Link>
+                  <Link to={`/events/${event.id}`} className="manage-btn">Manage</Link>
+                </div>
               </div>
             </article>
           ))}
@@ -139,11 +111,11 @@ function SimplePage({ title, text }) {
   );
 }
 
-function CheckInPage({ events }) {
+function CheckInPage() {
   const [searchParams] = useSearchParams();
   const preset = searchParams.get('event');
-  const defaultEvent = preset && events.some((e) => e.title === preset) ? preset : events[0]?.title;
-  const [eventName, setEventName] = useState(defaultEvent || '');
+  const defaultEvent = preset && events.some((e) => e.title === preset) ? preset : events[0].title;
+  const [eventName, setEventName] = useState(defaultEvent);
   const [name, setName] = useState('');
   const [ticket, setTicket] = useState('');
   const [records, setRecords] = useState(() => {
@@ -154,17 +126,11 @@ function CheckInPage({ events }) {
     }
   });
 
-  useEffect(() => {
-    if (!eventName && events[0]?.title) {
-      setEventName(events[0].title);
-    }
-  }, [eventName, events]);
-
   const eventRecords = records.filter((r) => r.event === eventName).slice().reverse();
 
   function submit(e) {
     e.preventDefault();
-    if (!name.trim() || !ticket.trim() || !eventName) return;
+    if (!name.trim() || !ticket.trim()) return;
     const next = [...records, { event: eventName, name: name.trim(), ticket: ticket.trim(), time: new Date().toLocaleString() }];
     setRecords(next);
     localStorage.setItem('eventhub-checkins-v1', JSON.stringify(next));
