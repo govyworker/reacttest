@@ -1,5 +1,7 @@
 import { Link, Navigate, Route, Routes, useLocation, useSearchParams } from 'react-router-dom';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+
+const allowedDomains = ['forces.gc.ca', 'ecn.forces.gc.ca'];
 
 const events = [
   { id: 'annual-tech-conference-2026', title: 'Annual Tech Conference 2026', date: 'March 15, 2026', time: '9:00 AM - 5:00 PM', location: 'Grand Convention Center, Hall A', status: 'upcoming', checkedIn: 0, totalGuests: 342 },
@@ -10,20 +12,153 @@ const events = [
   { id: 'customer-appreciation-gala', title: 'Customer Appreciation Gala', date: 'February 14, 2026', time: '6:00 PM - 10:00 PM', location: 'The Grand Ballroom', status: 'closed', checkedIn: 431, totalGuests: 475 }
 ];
 
+function getAccountEmail(account) {
+  return (account?.username || account?.idTokenClaims?.preferred_username || '').toLowerCase();
+}
+
+function isAllowedAccount(account) {
+  const email = getAccountEmail(account);
+  return allowedDomains.some((domain) => email.endsWith(`@${domain}`));
+}
+
+function buildMsalClient() {
+  if (!window.msal?.PublicClientApplication) {
+    return { error: 'MSAL SDK did not load. Ensure network access to the Microsoft CDN.' };
+  }
+
+  const clientId = import.meta.env.VITE_AAD_CLIENT_ID;
+  const tenantId = import.meta.env.VITE_AAD_TENANT_ID || 'common';
+
+  if (!clientId) {
+    return { error: 'Missing VITE_AAD_CLIENT_ID. Add it to your environment to enable sign-in.' };
+  }
+
+  const instance = new window.msal.PublicClientApplication({
+    auth: {
+      clientId,
+      authority: `https://login.microsoftonline.com/${tenantId}`,
+      redirectUri: window.location.origin
+    },
+    cache: {
+      cacheLocation: 'localStorage'
+    }
+  });
+
+  return { instance };
+}
+
 function App() {
+  const [msalClient, setMsalClient] = useState(null);
+  const [authAccount, setAuthAccount] = useState(null);
+  const [domainError, setDomainError] = useState('');
+  const [bootError, setBootError] = useState('');
+  const [isBooting, setIsBooting] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+
+    async function bootAuth() {
+      const { instance, error } = buildMsalClient();
+      if (error) {
+        if (active) {
+          setBootError(error);
+          setIsBooting(false);
+        }
+        return;
+      }
+
+      await instance.initialize();
+      const redirectResult = await instance.handleRedirectPromise();
+      const account = redirectResult?.account || instance.getActiveAccount() || instance.getAllAccounts()[0] || null;
+
+      if (account && !isAllowedAccount(account)) {
+        await instance.getTokenCache().removeAccount(account);
+        if (active) {
+          setMsalClient(instance);
+          setAuthAccount(null);
+          setDomainError('Access is restricted to @forces.gc.ca or @ecn.forces.gc.ca accounts.');
+          setIsBooting(false);
+        }
+        return;
+      }
+
+      if (account) {
+        instance.setActiveAccount(account);
+      }
+
+      if (active) {
+        setMsalClient(instance);
+        setAuthAccount(account);
+        setIsBooting(false);
+      }
+    }
+
+    bootAuth();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function handleLogin() {
+    if (!msalClient) return;
+    setDomainError('');
+    await msalClient.loginRedirect({
+      scopes: ['User.Read'],
+      prompt: 'select_account'
+    });
+  }
+
+  async function handleLogout() {
+    if (!msalClient) return;
+    await msalClient.logoutRedirect({
+      account: authAccount,
+      postLogoutRedirectUri: `${window.location.origin}/login`
+    });
+  }
+
+  if (isBooting) {
+    return <div className="auth-loading">Loading sign-in...</div>;
+  }
+
+  if (!authAccount) {
+    return (
+      <Routes>
+        <Route path="/login" element={<LoginPage onLogin={handleLogin} domainError={domainError} bootError={bootError} />} />
+        <Route path="*" element={<Navigate to="/login" replace />} />
+      </Routes>
+    );
+  }
+
   return (
     <Routes>
       <Route path="/" element={<Navigate to="/events" replace />} />
-      <Route path="/events" element={<EventsPage />} />
-      <Route path="/events/new" element={<SimplePage title="Create Event" text="Set up a new event, attendee capacity, and QR check-in policy for your internal DND group." />} />
-      <Route path="/events/:id" element={<SimplePage title="Manage Event" text="Review attendance data, update details, and monitor check-ins in one place." />} />
-      <Route path="/public-view" element={<SimplePage title="Public View" text="Internal event discovery feed for teammates to see upcoming sessions and RSVP." />} />
-      <Route path="/check-in" element={<CheckInPage />} />
+      <Route path="/login" element={<Navigate to="/events" replace />} />
+      <Route path="/events" element={<EventsPage onLogout={handleLogout} account={authAccount} />} />
+      <Route path="/events/new" element={<SimplePage title="Create Event" text="Set up a new event, attendee capacity, and QR check-in policy for your internal DND group." onLogout={handleLogout} account={authAccount} />} />
+      <Route path="/events/:id" element={<SimplePage title="Manage Event" text="Review attendance data, update details, and monitor check-ins in one place." onLogout={handleLogout} account={authAccount} />} />
+      <Route path="/public-view" element={<SimplePage title="Public View" text="Internal event discovery feed for teammates to see upcoming sessions and RSVP." onLogout={handleLogout} account={authAccount} />} />
+      <Route path="/check-in" element={<CheckInPage onLogout={handleLogout} account={authAccount} />} />
     </Routes>
   );
 }
 
-function Header() {
+function LoginPage({ onLogin, domainError, bootError }) {
+  return (
+    <div className="login-page">
+      <div className="login-card">
+        <h1>EventHub Secure Login</h1>
+        <p>Sign in with your Defence Microsoft account to continue.</p>
+        <button className="primary-btn login-btn" onClick={onLogin}>Sign in with Microsoft</button>
+        <p className="source-note">Allowed domains: @forces.gc.ca and @ecn.forces.gc.ca</p>
+        {domainError && <p className="error-msg">{domainError}</p>}
+        {bootError && <p className="error-msg">{bootError}</p>}
+      </div>
+    </div>
+  );
+}
+
+function Header({ onLogout, account }) {
   const { pathname } = useLocation();
   return (
     <header className="topbar">
@@ -33,12 +168,12 @@ function Header() {
         <Link to="/events" className={`nav-link ${pathname.startsWith('/events') ? 'active' : ''}`}>📅 Events</Link>
         <Link to="/check-in" className={`nav-link ${pathname === '/check-in' ? 'active' : ''}`}>▦ Check-In</Link>
       </nav>
-      <Link to="/public-view" className="user-btn" aria-label="User Profile">👤</Link>
+      <button type="button" onClick={onLogout} className="user-btn" aria-label={`Sign out ${getAccountEmail(account)}`}>⎋</button>
     </header>
   );
 }
 
-function EventsPage() {
+function EventsPage({ onLogout, account }) {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('all');
   const visibleEvents = useMemo(() => events.filter((event) => {
@@ -50,7 +185,7 @@ function EventsPage() {
 
   return (
     <div className="page-wrap">
-      <Header />
+      <Header onLogout={onLogout} account={account} />
       <main className="content">
         <div className="content-header">
           <div>
@@ -98,10 +233,10 @@ function EventsPage() {
   );
 }
 
-function SimplePage({ title, text }) {
+function SimplePage({ title, text, onLogout, account }) {
   return (
     <div className="subpage">
-      <Header />
+      <Header onLogout={onLogout} account={account} />
       <div className="placeholder-card">
         <h1>{title}</h1>
         <p>{text}</p>
@@ -111,7 +246,7 @@ function SimplePage({ title, text }) {
   );
 }
 
-function CheckInPage() {
+function CheckInPage({ onLogout, account }) {
   const [searchParams] = useSearchParams();
   const preset = searchParams.get('event');
   const defaultEvent = preset && events.some((e) => e.title === preset) ? preset : events[0].title;
@@ -140,7 +275,7 @@ function CheckInPage() {
 
   return (
     <div className="subpage">
-      <Header />
+      <Header onLogout={onLogout} account={account} />
       <div className="placeholder-card">
         <h1>QR Check-In Desk</h1>
         <p>Choose an event and register attendees as they arrive. (Simulated check-in flow)</p>
